@@ -1,0 +1,42 @@
+Metric Name,Type,Description,Labels,Optional/Dependency
+kueue_admission_attempt_duration_seconds,Histogram,"The latency of an admission attempt.",result,Standard
+kueue_admission_attempts_total,Counter,"The total number of attempts to admit workloads.",result,Standard
+kueue_admission_checks_wait_time_seconds,Histogram,"The time from when a workload got the quota reservation until admission, per cluster_queue.",cluster_queue; priority_class,Standard
+kueue_admission_cycle_preemption_skips,Gauge,"The number of Workloads in the ClusterQueue that got preemption candidates but had to be skipped because other ClusterQueues needed the same resources in the same cycle.",cluster_queue,Standard
+kueue_admission_wait_time_seconds,Histogram,"The time between a workload was created or requeued until admission, per cluster_queue.",cluster_queue; priority_class,Standard
+kueue_admitted_active_workloads,Gauge,"The number of admitted Workloads that are active (unsuspended and not finished), per cluster_queue.",cluster_queue,Standard
+kueue_admitted_workloads_total,Counter,"The total number of admitted workloads per cluster_queue.",cluster_queue; priority_class,Standard
+kueue_build_info,Gauge,"Kueue build information.",git_version; git_commit; build_date; go_version; compiler; platform,Standard
+kueue_cluster_queue_status,Gauge,"Reports cluster_queue with its status (pending, active or terminated).",cluster_queue; status,Standard
+kueue_evicted_workloads_once_total,Counter,"The number of unique workload evictions per cluster_queue.",cluster_queue; reason; detailed_reason; priority_class,Standard
+kueue_evicted_workloads_total,Counter,"The number of evicted workloads per cluster_queue.",cluster_queue; reason; underlying_cause; priority_class,Standard
+kueue_pending_workloads,Gauge,"The number of pending workloads, per cluster_queue and status.",cluster_queue; status,Standard
+kueue_pods_ready_to_evicted_time_seconds,Histogram,"The number of seconds between a workload’s pods being ready and eviction.",cluster_queue; reason; underlying_cause,Standard
+kueue_preempted_workloads_total,Counter,"The number of preempted workloads per preempting_cluster_queue.",preempting_cluster_queue; reason,Standard
+kueue_quota_reserved_wait_time_seconds,Histogram,"The time between a workload was created or requeued until it got quota reservation, per cluster_queue.",cluster_queue; priority_class,Standard
+kueue_quota_reserved_workloads_total,Counter,"The total number of quota reserved workloads per cluster_queue.",cluster_queue; priority_class,Standard
+kueue_replaced_workload_slices_total,Counter,"The number of replaced workload slices per cluster_queue.",cluster_queue,Standard
+kueue_reserving_active_workloads,Gauge,"The number of Workloads that are reserving quota, per cluster_queue.",cluster_queue,Standard
+kueue_cohort_weighted_share,Gauge,"Reports a value representing the maximum of the ratios of usage above nominal quota to the lendable resources in the Cohort.",cohort,Standard
+kueue_local_queue_admission_checks_wait_time_seconds,Histogram,"The time from when a workload got the quota reservation until admission, per local_queue.",name; namespace; priority_class,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_admission_wait_time_seconds,Histogram,"The time between a workload was created or requeued until admission, per local_queue.",name; namespace; priority_class,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_admitted_active_workloads,Gauge,"The number of admitted Workloads that are active (unsuspended and not finished), per localQueue.",name; namespace,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_admitted_workloads_total,Counter,"The total number of admitted workloads per local_queue.",name; namespace; priority_class,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_evicted_workloads_total,Counter,"The number of evicted workloads per local_queue.",name; namespace; reason; underlying_cause; priority_class,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_pending_workloads,Gauge,"The number of pending workloads, per local_queue and status.",name; namespace; status,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_quota_reserved_wait_time_seconds,Histogram,"The time between a workload was created or requeued until it got quota reservation, per local_queue.",name; namespace; priority_class,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_quota_reserved_workloads_total,Counter,"The total number of quota reserved workloads per local_queue.",name; namespace; priority_class,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_reserving_active_workloads,Gauge,"The number of Workloads that are reserving quota, per localQueue.",name; namespace,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_resource_reservation,Gauge,"Reports the localQueue’s total resource reservation within all the flavors.",name; namespace; flavor; resource,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_resource_usage,Gauge,"Reports the localQueue’s total resource usage within all the flavors.",name; namespace; flavor; resource,Feature Gate: LocalQueueMetrics [1]
+kueue_local_queue_status,Gauge,"Reports localQueue with its active status (True, False, or Unknown).",name; namespace; active,Feature Gate: LocalQueueMetrics [1]
+kueue_cluster_queue_borrowing_limit,Gauge,"Reports the cluster_queue’s resource borrowing limit within all the flavors.",cohort; cluster_queue; flavor; resource,Config: metrics.enableClusterQueueResources [2]
+kueue_cluster_queue_lending_limit,Gauge,"Reports the cluster_queue’s resource lending limit within all the flavors.",cohort; cluster_queue; flavor; resource,Config: metrics.enableClusterQueueResources [2]
+kueue_cluster_queue_nominal_quota,Gauge,"Reports the cluster_queue’s resource nominal quota within all the flavors.",cohort; cluster_queue; flavor; resource,Config: metrics.enableClusterQueueResources [2]
+kueue_cluster_queue_resource_reservation,Gauge,"Reports the cluster_queue’s total resource reservation within all the flavors.",cohort; cluster_queue; flavor; resource,Config: metrics.enableClusterQueueResources [2]
+kueue_cluster_queue_resource_usage,Gauge,"Reports the cluster_queue’s total resource usage within all the flavors.",cohort; cluster_queue; flavor; resource,Config: metrics.enableClusterQueueResources [2]
+kueue_cluster_queue_weighted_share,Gauge,"Reports a value representing the maximum of the ratios of usage above nominal quota to the lendable resources in the cohort, among all the resources provided by the ClusterQueue.",cluster_queue; cohort,Config: metrics.enableClusterQueueResources [2]
+kueue_admitted_until_ready_wait_time_seconds,Histogram,"The time between a workload was admitted until ready, per cluster_queue.",cluster_queue; priority_class,Config: waitForPodsReady [3]
+kueue_local_queue_admitted_until_ready_wait_time_seconds,Histogram,"The time between a workload was admitted until ready, per local_queue.",name; namespace; priority_class,Config: waitForPodsReady [3]
+kueue_local_queue_ready_wait_time_seconds,Histogram,"The time between a workload was created or requeued until ready, per local_queue.",name; namespace; priority_class,Config: waitForPodsReady [3]
+kueue_ready_wait_time_seconds,Histogram,"The time between a workload was created or requeued until ready, per cluster_queue.",cluster_queue; priority_class,Config: waitForPodsReady [3]

@@ -1,0 +1,34 @@
+Metric Name,Metric Type,Help Text,Labels,Optional/Feature-Gated
+kueue_admission_attempts_total,Counter,"The total number of attempts to admit workloads. Each admission attempt might try to admit more than one workload",result,No
+kueue_admission_attempt_duration_seconds,Histogram,"The latency of an admission attempt",result,No
+kueue_admission_cycle_preemption_skips,Gauge,"The number of Workloads in the ClusterQueue that got preemption candidates but had to be skipped because other ClusterQueues needed the same resources in the same cycle",cluster_queue,No
+kueue_pending_workloads,Gauge,"The number of pending workloads, with status as 'active' or 'inadmissible'","cluster_queue,status",No
+kueue_local_queue_pending_workloads,Gauge,"The number of pending workloads for a local queue, with status as 'active' or 'inadmissible'","name,namespace,status",Yes - LocalQueueMetrics feature
+kueue_quota_reserved_workloads_total,Counter,"The total number of quota reserved workloads",cluster_queue,No
+kueue_local_queue_quota_reserved_workloads_total,Counter,"The total number of quota reserved workloads for a local queue","name,namespace",Yes - LocalQueueMetrics feature
+kueue_quota_reserved_wait_time_seconds,Histogram,"The time between a workload was created or requeued until it got quota reservation",cluster_queue,No
+kueue_local_queue_quota_reserved_wait_time_seconds,Histogram,"The time between a workload was created or requeued until it got quota reservation for a local queue","name,namespace",Yes - LocalQueueMetrics feature
+kueue_admitted_workloads_total,Counter,"The total number of admitted workloads",cluster_queue,No
+kueue_local_queue_admitted_workloads_total,Counter,"The total number of admitted workloads for a local queue","name,namespace",Yes - LocalQueueMetrics feature
+kueue_admission_wait_time_seconds,Histogram,"The time between a workload was created or requeued until admission",cluster_queue,No
+kueue_local_queue_admission_wait_time_seconds,Histogram,"The time between a workload was created or requeued until admission for a local queue","name,namespace",Yes - LocalQueueMetrics feature
+kueue_admission_checks_wait_time_seconds,Histogram,"The time from when a workload got the quota reservation until admission",cluster_queue,No
+kueue_local_queue_admission_checks_wait_time_seconds,Histogram,"The time from when a workload got the quota reservation until admission for a local queue","name,namespace",Yes - LocalQueueMetrics feature
+kueue_evicted_workloads_total,Counter,"The number of evicted workloads with various reasons","cluster_queue,reason",No
+kueue_local_queue_evicted_workloads_total,Counter,"The number of evicted workloads for a local queue with various reasons","name,namespace,reason",Yes - LocalQueueMetrics feature
+kueue_preempted_workloads_total,Counter,"The number of preempted workloads with various reasons","preempting_cluster_queue,reason",No
+kueue_reserving_active_workloads,Gauge,"The number of Workloads that are reserving quota",cluster_queue,No
+kueue_local_queue_reserving_active_workloads,Gauge,"The number of Workloads that are reserving quota for a local queue","name,namespace",Yes - LocalQueueMetrics feature
+kueue_admitted_active_workloads,Gauge,"The number of admitted Workloads that are active (unsuspended and not finished)",cluster_queue,No
+kueue_local_queue_admitted_active_workloads,Gauge,"The number of admitted Workloads that are active (unsuspended and not finished) for a local queue","name,namespace",Yes - LocalQueueMetrics feature
+kueue_cluster_queue_status,Gauge,"Reports ClusterQueue status (pending, active, or terminated)","cluster_queue,status",No
+kueue_local_queue_status,Gauge,"Reports LocalQueue active status (True, False, or Unknown)","name,namespace,active",Yes - LocalQueueMetrics feature
+kueue_cluster_queue_resource_reservation,Gauge,"Reports the cluster_queue's total resource reservation within all the flavors","cohort,cluster_queue,flavor,resource",Yes - optional_clusterqueue_resources
+kueue_cluster_queue_resource_usage,Gauge,"Reports the cluster_queue's total resource usage within all the flavors","cohort,cluster_queue,flavor,resource",Yes - optional_clusterqueue_resources
+kueue_local_queue_resource_reservation,Gauge,"Reports the localQueue's total resource reservation within all the flavors","name,namespace,flavor,resource",Yes - LocalQueueMetrics feature
+kueue_local_queue_resource_usage,Gauge,"Reports the localQueue's total resource usage within all the flavors","name,namespace,flavor,resource",Yes - LocalQueueMetrics feature
+kueue_cluster_queue_nominal_quota,Gauge,"Reports the cluster_queue's resource nominal quota within all the flavors","cohort,cluster_queue,flavor,resource",Yes - optional_clusterqueue_resources
+kueue_cluster_queue_borrowing_limit,Gauge,"Reports the cluster_queue's resource borrowing limit within all the flavors","cohort,cluster_queue,flavor,resource",Yes - optional_clusterqueue_resources
+kueue_cluster_queue_lending_limit,Gauge,"Reports the cluster_queue's resource lending limit within all the flavors","cohort,cluster_queue,flavor,resource",Yes - LendingLimit feature
+kueue_cluster_queue_weighted_share,Gauge,"Reports the weighted share for a ClusterQueue, representing resource usage relative to nominal quota and cohort resources",cluster_queue,No
+kueue_cohort_weighted_share,Gauge,"Reports the weighted share for a Cohort, representing overall resource usage relative to nominal quota",cohort,No
