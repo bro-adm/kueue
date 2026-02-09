@@ -1,0 +1,92 @@
+# Blocker job in CQ2 - high priority, blocks resources in cohort
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: blocker-job
+  namespace: kueue-test
+  labels:
+    kueue.x-k8s.io/queue-name: lq-preempt-2
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-preempt-2
+    spec:
+      priorityClassName: high-priority
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: ["sleep", "300"]
+        resources:
+          requests:
+            cpu: "3"
+            memory: "3Gi"
+          limits:
+            cpu: "3"
+            memory: "3Gi"
+      restartPolicy: Never
+---
+# High priority job 1 - triggers preemption
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: high-priority-job-1
+  namespace: kueue-test
+  labels:
+    kueue.x-k8s.io/queue-name: lq-preempt-1
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-preempt-1
+    spec:
+      priorityClassName: high-priority
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: ["sleep", "300"]
+        resources:
+          requests:
+            cpu: "2"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+      restartPolicy: Never
+---
+# High priority job 2 - triggers preemption or skip
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: high-priority-job-2
+  namespace: kueue-test
+  labels:
+    kueue.x-k8s.io/queue-name: lq-preempt-2
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-preempt-2
+    spec:
+      priorityClassName: high-priority
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: ["sleep", "300"]
+        resources:
+          requests:
+            cpu: "3"
+            memory: "3Gi"
+          limits:
+            cpu: "3"
+            memory: "3Gi"
+      restartPolicy: Never

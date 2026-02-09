@@ -1,0 +1,881 @@
+#!/usr/bin/env fish
+
+# Kueue Metrics Test Automation Script (No Cleanup Version)
+# This script runs tests in separate namespaces and preserves all resources for metrics collection
+
+set -g KUEUE_NAMESPACE "opendatahub"
+set -g METRICS_PORT "8443"
+
+# Separate namespaces for each test case to preserve metrics
+set -g NS_PREEMPTION "kueue-test-preemption"
+set -g NS_EVICTION_DEACT "kueue-test-eviction-deact"
+set -g NS_EVICTION_CQ_STOP "kueue-test-eviction-cq-stop"
+set -g NS_ADMISSION_CHECKS "kueue-test-admission-checks"
+set -g NS_PREEMPTION_SKIP "kueue-test-preemption-skip"
+
+# Colors for output
+set -g GREEN '\033[0;32m'
+set -g RED '\033[0;31m'
+set -g YELLOW '\033[1;33m'
+set -g BLUE '\033[0;34m'
+set -g NC '\033[0m' # No Color
+
+function print_header
+    echo -e "$BLUE"
+    echo "========================================"
+    echo $argv[1]
+    echo "========================================"
+    echo -e "$NC"
+end
+
+function print_success
+    echo -e "$GREEN✓ $argv[1]$NC"
+end
+
+function print_error
+    echo -e "$RED✗ $argv[1]$NC"
+end
+
+function print_info
+    echo -e "$YELLOW→ $argv[1]$NC"
+end
+
+function check_prerequisites
+    print_header "Checking Prerequisites"
+
+    if not command -v kubectl &> /dev/null
+        print_error "kubectl not found"
+        exit 1
+    end
+    print_success "kubectl is installed"
+
+    if not kubectl cluster-info &> /dev/null
+        print_error "Cannot access Kubernetes cluster"
+        exit 1
+    end
+    print_success "Cluster is accessible"
+
+    if not kubectl get deployment kueue-controller-manager -n $KUEUE_NAMESPACE &> /dev/null
+        print_error "Kueue controller not found in namespace $KUEUE_NAMESPACE"
+        exit 1
+    end
+    print_success "Kueue controller found"
+
+    print_info "Creating test namespaces..."
+    kubectl create namespace $NS_PREEMPTION --dry-run=client -o yaml | kubectl apply -f - &> /dev/null
+    kubectl create namespace $NS_EVICTION_DEACT --dry-run=client -o yaml | kubectl apply -f - &> /dev/null
+    kubectl create namespace $NS_EVICTION_CQ_STOP --dry-run=client -o yaml | kubectl apply -f - &> /dev/null
+    kubectl create namespace $NS_ADMISSION_CHECKS --dry-run=client -o yaml | kubectl apply -f - &> /dev/null
+    kubectl create namespace $NS_PREEMPTION_SKIP --dry-run=client -o yaml | kubectl apply -f - &> /dev/null
+    print_success "Test namespaces ready"
+
+    echo ""
+end
+
+function apply_manifest_with_namespace
+    set manifest_file $argv[1]
+    set namespace $argv[2]
+
+    sed "s/namespace: kueue-test/namespace: $namespace/g" $manifest_file | kubectl apply -f -
+end
+
+function wait_for_workload_admitted
+    set namespace $argv[1]
+    set job_name $argv[2]
+    set timeout $argv[3]
+
+    print_info "Waiting for workload for job $job_name to be admitted..."
+
+    set elapsed 0
+    while test $elapsed -lt $timeout
+        set job_uid (kubectl get job $job_name -n $namespace -o jsonpath='{.metadata.uid}' 2>/dev/null)
+        if test -n "$job_uid"
+            set workload_name (kubectl get workloads -n $namespace -l kueue.x-k8s.io/job-uid=$job_uid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if test -n "$workload_name"
+                set admitted (kubectl get workload $workload_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null)
+                if test "$admitted" = "True"
+                    print_success "Workload $workload_name is admitted"
+                    return 0
+                end
+            end
+        end
+        sleep 2
+        set elapsed (math $elapsed + 2)
+    end
+
+    print_error "Timeout waiting for workload to be admitted"
+    return 1
+end
+
+function wait_for_workload_evicted
+    set namespace $argv[1]
+    set workload_name $argv[2]
+    set timeout $argv[3]
+
+    print_info "Waiting for workload $workload_name to be evicted..."
+
+    set elapsed 0
+    while test $elapsed -lt $timeout
+        set evicted (kubectl get workload $workload_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Evicted")].status}' 2>/dev/null)
+        if test "$evicted" = "True"
+            set reason (kubectl get workload $workload_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Evicted")].reason}' 2>/dev/null)
+            print_success "Workload $workload_name is evicted. Reason: $reason"
+            return 0
+        end
+        sleep 2
+        set elapsed (math $elapsed + 2)
+    end
+
+    print_error "Timeout waiting for workload to be evicted"
+    return 1
+end
+
+function test_preemption_metrics
+    print_header "Test Case 1: Preemption Metrics"
+
+    print_info "Applying preemption setup (ClusterQueues, ResourceFlavors, PriorityClasses)..."
+    # Apply cluster-scoped resources
+    kubectl apply -f manifests/1-preemption-cohort-setup.yaml
+    sleep 2
+
+    print_info "Creating LocalQueues in namespace $NS_PREEMPTION..."
+    # Create LocalQueues specifically in the test namespace
+    echo "apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_PREEMPTION
+  name: lq-preempt-1
+spec:
+  clusterQueue: cq-preempt-1
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_PREEMPTION
+  name: lq-preempt-2
+spec:
+  clusterQueue: cq-preempt-2" | kubectl apply -f -
+    sleep 3
+
+    print_info "Creating low-priority jobs in namespace $NS_PREEMPTION..."
+    apply_manifest_with_namespace manifests/1a-low-priority-jobs.yaml $NS_PREEMPTION
+    sleep 2
+    kubectl patch job low-priority-job-1 -n $NS_PREEMPTION --type=merge -p '{"spec":{"suspend":false}}'
+    kubectl patch job low-priority-job-2 -n $NS_PREEMPTION --type=merge -p '{"spec":{"suspend":false}}'
+    sleep 5
+
+    wait_for_workload_admitted $NS_PREEMPTION "low-priority-job-1" 60
+    wait_for_workload_admitted $NS_PREEMPTION "low-priority-job-2" 60
+
+    print_info "Creating high-priority and blocker jobs..."
+    apply_manifest_with_namespace manifests/1b-high-priority-jobs.yaml $NS_PREEMPTION
+    sleep 2
+    kubectl patch job blocker-job -n $NS_PREEMPTION --type=merge -p '{"spec":{"suspend":false}}'
+    sleep 5
+
+    wait_for_workload_admitted $NS_PREEMPTION "blocker-job" 60
+
+    print_info "Triggering preemption..."
+    kubectl patch job high-priority-job-1 -n $NS_PREEMPTION --type=merge -p '{"spec":{"suspend":false}}'
+    kubectl patch job high-priority-job-2 -n $NS_PREEMPTION --type=merge -p '{"spec":{"suspend":false}}'
+    sleep 10
+
+    set job_uid_1 (kubectl get job low-priority-job-1 -n $NS_PREEMPTION -o jsonpath='{.metadata.uid}' 2>/dev/null)
+    set low_wl_1 (kubectl get workloads -n $NS_PREEMPTION -l kueue.x-k8s.io/job-uid=$job_uid_1 -o jsonpath='{.items[0].metadata.name}')
+
+    if test -n "$low_wl_1"
+        wait_for_workload_evicted $NS_PREEMPTION $low_wl_1 30
+    end
+
+    print_success "Preemption test completed - resources preserved in namespace $NS_PREEMPTION"
+    echo ""
+end
+
+function test_eviction_deactivation
+    print_header "Test Case 2a: Eviction - Deactivation"
+
+    print_info "Applying eviction test setup (ClusterQueue, ResourceFlavor)..."
+    kubectl apply -f manifests/2-eviction-test-setup.yaml
+    sleep 2
+
+    print_info "Creating LocalQueue in namespace $NS_EVICTION_DEACT..."
+    echo "apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_EVICTION_DEACT
+  name: lq-eviction-test
+spec:
+  clusterQueue: cq-eviction-test" | kubectl apply -f -
+    sleep 2
+
+    print_info "Creating test job in namespace $NS_EVICTION_DEACT..."
+    echo "apiVersion: batch/v1
+kind: Job
+metadata:
+  name: job-for-deactivation
+  namespace: $NS_EVICTION_DEACT
+  labels:
+    kueue.x-k8s.io/queue-name: lq-eviction-test
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-eviction-test
+    spec:
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: [\"sleep\", \"300\"]
+        resources:
+          requests:
+            cpu: \"1\"
+            memory: \"1Gi\"
+          limits:
+            cpu: \"1\"
+            memory: \"1Gi\"
+      restartPolicy: Never" | kubectl apply -f -
+
+    print_info "Waiting for job to be created..."
+    set elapsed 0
+    while test $elapsed -lt 30
+        if kubectl get job job-for-deactivation -n $NS_EVICTION_DEACT &> /dev/null
+            print_success "Job created"
+            break
+        end
+        sleep 1
+        set elapsed (math $elapsed + 1)
+    end
+
+    kubectl patch job job-for-deactivation -n $NS_EVICTION_DEACT --type=merge -p '{"spec":{"suspend":false}}'
+    sleep 5
+
+    wait_for_workload_admitted $NS_EVICTION_DEACT "job-for-deactivation" 60
+
+    set job_uid (kubectl get job job-for-deactivation -n $NS_EVICTION_DEACT -o jsonpath='{.metadata.uid}' 2>/dev/null)
+    set workload_name (kubectl get workloads -n $NS_EVICTION_DEACT -l kueue.x-k8s.io/job-uid=$job_uid -o jsonpath='{.items[0].metadata.name}')
+
+    if test -n "$workload_name"
+        kubectl patch workload $workload_name -n $NS_EVICTION_DEACT --type=merge -p '{"spec":{"active":false}}'
+        wait_for_workload_evicted $NS_EVICTION_DEACT $workload_name 30
+    end
+
+    print_success "Deactivation eviction test completed - resources preserved in namespace $NS_EVICTION_DEACT"
+    echo ""
+end
+
+function test_eviction_cq_stopped
+    print_header "Test Case 2b: Eviction - ClusterQueue Stopped"
+
+    print_info "Creating LocalQueue in namespace $NS_EVICTION_CQ_STOP..."
+    echo "apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_EVICTION_CQ_STOP
+  name: lq-eviction-test
+spec:
+  clusterQueue: cq-eviction-test" | kubectl apply -f -
+    sleep 2
+
+    print_info "Creating test job in namespace $NS_EVICTION_CQ_STOP..."
+    echo "apiVersion: batch/v1
+kind: Job
+metadata:
+  name: job-for-cq-stop
+  namespace: $NS_EVICTION_CQ_STOP
+  labels:
+    kueue.x-k8s.io/queue-name: lq-eviction-test
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-eviction-test
+    spec:
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: [\"sleep\", \"300\"]
+        resources:
+          requests:
+            cpu: \"1\"
+            memory: \"1Gi\"
+          limits:
+            cpu: \"1\"
+            memory: \"1Gi\"
+      restartPolicy: Never" | kubectl apply -f -
+
+    print_info "Waiting for job to be created..."
+    set elapsed 0
+    while test $elapsed -lt 30
+        if kubectl get job job-for-cq-stop -n $NS_EVICTION_CQ_STOP &> /dev/null
+            print_success "Job created"
+            break
+        end
+        sleep 1
+        set elapsed (math $elapsed + 1)
+    end
+
+    kubectl patch job job-for-cq-stop -n $NS_EVICTION_CQ_STOP --type=merge -p '{"spec":{"suspend":false}}'
+    sleep 5
+
+    wait_for_workload_admitted $NS_EVICTION_CQ_STOP "job-for-cq-stop" 60
+
+    kubectl patch clusterqueue cq-eviction-test --type=merge -p '{"spec":{"stopPolicy":"HoldAndDrain"}}'
+    sleep 5
+
+    set job_uid (kubectl get job job-for-cq-stop -n $NS_EVICTION_CQ_STOP -o jsonpath='{.metadata.uid}' 2>/dev/null)
+    set workload_name (kubectl get workloads -n $NS_EVICTION_CQ_STOP -l kueue.x-k8s.io/job-uid=$job_uid -o jsonpath='{.items[0].metadata.name}')
+
+    if test -n "$workload_name"
+        wait_for_workload_evicted $NS_EVICTION_CQ_STOP $workload_name 30
+    end
+
+    print_success "ClusterQueue stop eviction test completed - resources preserved in namespace $NS_EVICTION_CQ_STOP"
+    echo ""
+end
+
+function test_admission_checks
+    print_header "Test Case 3: Admission Checks"
+
+    print_info "Applying admission checks setup (ClusterQueue, AdmissionCheck, ResourceFlavor)..."
+    kubectl apply -f manifests/3-admission-checks-setup.yaml
+    sleep 2
+
+    print_info "Activating AdmissionCheck manually (no provisioning controller in v0.11.6)..."
+    kubectl patch admissioncheck sample-admission-check --type=merge --subresource=status -p '{"status":{"conditions":[{"type":"Active","status":"True","reason":"Activated","message":"Manually activated for testing","lastTransitionTime":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}]}}'
+    sleep 3
+
+    print_info "Creating LocalQueue in namespace $NS_ADMISSION_CHECKS..."
+    echo "apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_ADMISSION_CHECKS
+  name: lq-admission-check-test
+spec:
+  clusterQueue: cq-admission-check-test" | kubectl apply -f -
+    sleep 2
+
+    print_info "Creating test job in namespace $NS_ADMISSION_CHECKS..."
+    apply_manifest_with_namespace manifests/3a-admission-checks-test-job.yaml $NS_ADMISSION_CHECKS
+    sleep 2
+
+    kubectl patch job admission-check-test-job -n $NS_ADMISSION_CHECKS --type=merge -p '{"spec":{"suspend":false}}'
+    sleep 5
+
+    print_info "Waiting for workload to get quota reservation..."
+    set elapsed 0
+    set timeout 60
+    set workload_name ""
+    while test $elapsed -lt $timeout
+        set job_uid (kubectl get job admission-check-test-job -n $NS_ADMISSION_CHECKS -o jsonpath='{.metadata.uid}' 2>/dev/null)
+        if test -n "$job_uid"
+            set workload_name (kubectl get workloads -n $NS_ADMISSION_CHECKS -l kueue.x-k8s.io/job-uid=$job_uid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if test -n "$workload_name"
+                set quota_reserved (kubectl get workload $workload_name -n $NS_ADMISSION_CHECKS -o jsonpath='{.status.conditions[?(@.type=="QuotaReserved")].status}' 2>/dev/null)
+                if test "$quota_reserved" = "True"
+                    print_success "Workload $workload_name got quota reservation"
+                    break
+                end
+            end
+        end
+        sleep 2
+        set elapsed (math $elapsed + 2)
+    end
+
+    if test -n "$workload_name"
+        print_info "Workload is waiting for admission check approval..."
+        print_info "Waiting 10 seconds before approving..."
+        sleep 10
+
+        print_info "Approving admission check to trigger metrics..."
+        kubectl patch workload $workload_name -n $NS_ADMISSION_CHECKS --type=merge --subresource=status -p "{\"status\":{\"admissionChecks\":[{\"name\":\"sample-admission-check\",\"state\":\"Ready\",\"message\":\"Approved for testing\",\"lastTransitionTime\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}]}}"
+
+        print_info "Waiting for workload to be admitted..."
+        set elapsed 0
+        set timeout 30
+        while test $elapsed -lt $timeout
+            set admitted (kubectl get workload $workload_name -n $NS_ADMISSION_CHECKS -o jsonpath='{.status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null)
+            if test "$admitted" = "True"
+                print_success "Workload was admitted! Admission checks wait time metrics recorded."
+                break
+            end
+            sleep 2
+            set elapsed (math $elapsed + 2)
+        end
+
+        if test "$admitted" != "True"
+            print_error "Workload was not admitted within timeout"
+        end
+    end
+
+    print_success "Admission checks test completed - resources preserved in namespace $NS_ADMISSION_CHECKS"
+    echo ""
+end
+
+function test_preemption_skips
+    print_header "Test Case 4: Preemption Skips (Cross-CQ Cohort Competition)"
+
+    echo ""
+    print_info "ℹ️  Test Strategy: Using Blocker Pattern (from E2E test)"
+    echo ""
+    echo "This test uses the blocker pattern to guarantee both attackers are processed"
+    echo "in the same admission cycle:"
+    echo ""
+    echo "  1. Victim (cq-victim) → admits, borrows 4 CPU from cohort"
+    echo "  2. Blocker (cq-resource-bank) → admits, uses 200m CPU from resource-bank"
+    echo "     → Cohort now has 4.2 CPU total, all allocated (no free resources)"
+    echo "  3. Attacker-1 (cq-attacker-1, NOT suspended) → queued, needs 4 CPU"
+    echo "  4. Attacker-2 (cq-attacker-2, NOT suspended) → queued, needs 4 CPU"
+    echo "     → Both attackers now in scheduler queue, pending (can't fit)"
+    echo "  5. Deactivate blocker (ONE operation) → frees 200m CPU"
+    echo "     → Next scheduler cycle processes BOTH attackers (already queued)"
+    echo "     → Both identify victim (borrowing 4 CPU) as preemption target"
+    echo "  6. Both identify same victim → overlap detected → metric increments!"
+    echo ""
+    echo "This is deterministic because:"
+    echo "  - Both attackers are pre-queued BEFORE trigger event"
+    echo "  - Trigger is ONE operation (deactivate blocker)"
+    echo "  - Scheduler processes ALL pending workloads in one cycle"
+    echo "  - Blocker in separate CQ prevents preempting victim before trigger"
+    echo ""
+
+    print_info "Applying preemption skip setup (Cohort, 4 ClusterQueues, ResourceFlavor)..."
+    print_info "Note: resource-bank CQ is required - victims must BORROW for cross-CQ reclamation to work"
+    kubectl apply -f manifests/4-preemption-skip-setup.yaml
+    sleep 3
+
+    print_info "Creating LocalQueues for all 4 ClusterQueues in namespace $NS_PREEMPTION_SKIP..."
+    echo "apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_PREEMPTION_SKIP
+  name: lq-resource-bank
+spec:
+  clusterQueue: cq-resource-bank
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_PREEMPTION_SKIP
+  name: lq-victim
+spec:
+  clusterQueue: cq-victim
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_PREEMPTION_SKIP
+  name: lq-attacker-1
+spec:
+  clusterQueue: cq-attacker-1
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: $NS_PREEMPTION_SKIP
+  name: lq-attacker-2
+spec:
+  clusterQueue: cq-attacker-2" | kubectl apply -f -
+    sleep 2
+
+    print_info "Step 1: Creating low-priority victim job (will borrow 4 CPU from cohort)..."
+    echo "apiVersion: batch/v1
+kind: Job
+metadata:
+  name: low-priority-victim
+  namespace: $NS_PREEMPTION_SKIP
+  labels:
+    kueue.x-k8s.io/queue-name: lq-victim
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: false
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-victim
+    spec:
+      priorityClassName: low-priority
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: [\"sleep\", \"300\"]
+        resources:
+          requests:
+            cpu: \"4\"
+            memory: \"4Gi\"
+          limits:
+            cpu: \"4\"
+            memory: \"4Gi\"
+      restartPolicy: Never" | kubectl apply -f -
+
+    wait_for_workload_admitted $NS_PREEMPTION_SKIP "low-priority-victim" 60
+    print_success "Victim admitted and borrowing 4 CPU from cohort"
+    echo ""
+
+    print_info "Step 2: Creating blocker job in resource-bank CQ (uses remaining cohort resources)..."
+    print_info "Note: Blocker prevents attackers from admitting until it's deactivated"
+    echo "apiVersion: batch/v1
+kind: Job
+metadata:
+  name: blocker-job
+  namespace: $NS_PREEMPTION_SKIP
+  labels:
+    kueue.x-k8s.io/queue-name: lq-resource-bank
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: false
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-resource-bank
+    spec:
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: [\"sleep\", \"300\"]
+        resources:
+          requests:
+            cpu: \"200m\"
+            memory: \"200Mi\"
+          limits:
+            cpu: \"200m\"
+            memory: \"200Mi\"
+      restartPolicy: Never" | kubectl apply -f -
+
+    wait_for_workload_admitted $NS_PREEMPTION_SKIP "blocker-job" 60
+    print_success "Blocker admitted - cohort resources now fully allocated"
+    echo ""
+
+    print_info "Step 3: Creating 2 high-priority attacker jobs (NOT suspended)..."
+    print_info "Both will be queued but cannot be admitted (no resources available)"
+    echo "apiVersion: batch/v1
+kind: Job
+metadata:
+  name: high-priority-attacker-1
+  namespace: $NS_PREEMPTION_SKIP
+  labels:
+    kueue.x-k8s.io/queue-name: lq-attacker-1
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: false
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-attacker-1
+    spec:
+      priorityClassName: high-priority
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: [\"sleep\", \"300\"]
+        resources:
+          requests:
+            cpu: \"4\"
+            memory: \"4Gi\"
+          limits:
+            cpu: \"4\"
+            memory: \"4Gi\"
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: high-priority-attacker-2
+  namespace: $NS_PREEMPTION_SKIP
+  labels:
+    kueue.x-k8s.io/queue-name: lq-attacker-2
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: false
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-attacker-2
+    spec:
+      priorityClassName: high-priority
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: [\"sleep\", \"300\"]
+        resources:
+          requests:
+            cpu: \"4\"
+            memory: \"4Gi\"
+          limits:
+            cpu: \"4\"
+            memory: \"4Gi\"
+      restartPolicy: Never" | kubectl apply -f -
+
+    print_info "Waiting for both attacker workloads to exist and be queued (pending)..."
+    set elapsed 0
+    set timeout 30
+    set wl1_exists false
+    set wl2_exists false
+    while test $elapsed -lt $timeout
+        set job_uid_1 (kubectl get job high-priority-attacker-1 -n $NS_PREEMPTION_SKIP -o jsonpath='{.metadata.uid}' 2>/dev/null)
+        set job_uid_2 (kubectl get job high-priority-attacker-2 -n $NS_PREEMPTION_SKIP -o jsonpath='{.metadata.uid}' 2>/dev/null)
+
+        if test -n "$job_uid_1"
+            set wl1 (kubectl get workloads -n $NS_PREEMPTION_SKIP -l kueue.x-k8s.io/job-uid=$job_uid_1 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if test -n "$wl1"
+                set wl1_exists true
+            end
+        end
+
+        if test -n "$job_uid_2"
+            set wl2 (kubectl get workloads -n $NS_PREEMPTION_SKIP -l kueue.x-k8s.io/job-uid=$job_uid_2 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if test -n "$wl2"
+                set wl2_exists true
+            end
+        end
+
+        if test "$wl1_exists" = "true" -a "$wl2_exists" = "true"
+            print_success "Both attacker workloads exist and are queued (waiting for resources)"
+            break
+        end
+
+        sleep 1
+        set elapsed (math $elapsed + 1)
+    end
+
+    if not test "$wl1_exists" = "true" -a "$wl2_exists" = "true"
+        print_error "Failed to create both attacker workloads within timeout"
+    end
+
+    sleep 3
+    echo ""
+
+    print_info "Step 4: Deactivating blocker workload (ONE operation to trigger preemption)..."
+    set blocker_job_uid (kubectl get job blocker-job -n $NS_PREEMPTION_SKIP -o jsonpath='{.metadata.uid}' 2>/dev/null)
+    set blocker_workload ""
+    if test -n "$blocker_job_uid"
+        set blocker_workload (kubectl get workloads -n $NS_PREEMPTION_SKIP -l kueue.x-k8s.io/job-uid=$blocker_job_uid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    end
+
+    if test -n "$blocker_workload"
+        kubectl patch workload $blocker_workload -n $NS_PREEMPTION_SKIP --type=merge -p '{"spec":{"active":false}}'
+        print_success "Blocker deactivated - resources freed, scheduler will process both attackers in next cycle"
+    else
+        print_error "Could not find blocker workload"
+    end
+
+    sleep 15
+    echo ""
+
+    print_info "Validating preemption skip behavior..."
+
+    # Check controller logs for overlapping preemption targets message
+    set overlap_log_count (kubectl logs -n $KUEUE_NAMESPACE deployment/kueue-controller-manager --tail=300 | grep "overlapping preemption targets" | wc -l | tr -d ' ')
+
+    # Check if victim was actually evicted (preempted)
+    set job_uid (kubectl get job low-priority-victim -n $NS_PREEMPTION_SKIP -o jsonpath='{.metadata.uid}' 2>/dev/null)
+    set victim_workload ""
+    if test -n "$job_uid"
+        set victim_workload (kubectl get workloads -n $NS_PREEMPTION_SKIP -l kueue.x-k8s.io/job-uid=$job_uid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    end
+
+    set victim_evicted false
+    if test -n "$victim_workload"
+        set evicted_status (kubectl get workload $victim_workload -n $NS_PREEMPTION_SKIP -o jsonpath='{.status.conditions[?(@.type=="Evicted")].status}' 2>/dev/null)
+        if test "$evicted_status" = "True"
+            set victim_evicted true
+        end
+    end
+
+    # Check the actual metric for both attacker ClusterQueues
+    print_info "Checking kueue_admission_cycle_preemption_skips metric..."
+    set TOKEN (kubectl create token kueue-controller-manager-metrics-reader -n $KUEUE_NAMESPACE --duration=5m 2>/dev/null)
+
+    set skip_metric_1 ""
+    set skip_metric_2 ""
+    if test -n "$TOKEN"
+        set metric_output (curl -sk https://localhost:$METRICS_PORT/metrics -H "Authorization: Bearer $TOKEN" 2>/dev/null)
+        set skip_metric_1 (echo "$metric_output" | grep 'kueue_admission_cycle_preemption_skips{cluster_queue="cq-attacker-1"}' | awk '{print $2}')
+        set skip_metric_2 (echo "$metric_output" | grep 'kueue_admission_cycle_preemption_skips{cluster_queue="cq-attacker-2"}' | awk '{print $2}')
+    end
+
+    echo ""
+    if test $overlap_log_count -gt 0
+        print_success "Found $overlap_log_count 'overlapping preemption targets' messages in controller logs"
+    else
+        print_error "No overlapping preemption target messages found in controller logs"
+    end
+
+    if test "$victim_evicted" = "true"
+        print_success "Low-priority victim workload was preempted (evicted)"
+    else
+        print_info "Victim workload status: not evicted yet (preemption may be pending)"
+    end
+
+    # Validate the metric values
+    set metric_found false
+    if test -n "$skip_metric_1" -a "$skip_metric_1" != "0"
+        print_success "Metric kueue_admission_cycle_preemption_skips{cluster_queue=\"cq-attacker-1\"} = $skip_metric_1"
+        set metric_found true
+    end
+    if test -n "$skip_metric_2" -a "$skip_metric_2" != "0"
+        print_success "Metric kueue_admission_cycle_preemption_skips{cluster_queue=\"cq-attacker-2\"} = $skip_metric_2"
+        set metric_found true
+    end
+
+    if not test "$metric_found" = "true"
+        print_error "Metric kueue_admission_cycle_preemption_skips not found or is zero for both attacker ClusterQueues"
+    end
+
+    echo ""
+    if test "$metric_found" = "true" -a $overlap_log_count -gt 0
+        print_success "Preemption skip test PASSED - metric and overlapping targets detected"
+        print_success "Both attackers were successfully processed in the same admission cycle!"
+        print_success "The blocker pattern worked deterministically!"
+    else if test $overlap_log_count -gt 0
+        print_info "Preemption skip test PARTIAL - overlapping targets detected but metric not yet available"
+        print_info "Note: Metric may require port-forward to be active. Run: oc port-forward -n $KUEUE_NAMESPACE deployment/kueue-controller-manager $METRICS_PORT:8443"
+    else
+        print_error "Preemption skip test FAILED - no overlapping target behavior detected"
+        echo ""
+        print_info "This is unexpected with the blocker pattern!"
+        print_info "Possible causes:"
+        print_info "  1. Blocker was not deactivated successfully"
+        print_info "  2. Attackers were not queued before blocker deactivation"
+        print_info "  3. Scheduler processed workloads in separate cycles despite setup"
+        echo ""
+        print_info "Debug steps:"
+        print_info "  kubectl get workloads -n $NS_PREEMPTION_SKIP"
+        print_info "  kubectl logs -n $KUEUE_NAMESPACE deployment/kueue-controller-manager --tail=100"
+    end
+
+    print_info "Resources preserved in namespace $NS_PREEMPTION_SKIP for further inspection"
+    echo ""
+end
+
+function test_prerequisites_config
+    print_header "Test Case 0: Configuration Prerequisites"
+
+    # Pipe kubectl directly to grep/awk to avoid Fish shell variable expansion issues
+    set fair_sharing_enabled (kubectl get configmap kueue-manager-config -n $KUEUE_NAMESPACE -o jsonpath='{.data.controller_manager_config\.yaml}' 2>/dev/null | grep -A 3 "^fairSharing:" | grep "enable:" | awk '{print $2}')
+    set cq_resources_enabled (kubectl get configmap kueue-manager-config -n $KUEUE_NAMESPACE -o jsonpath='{.data.controller_manager_config\.yaml}' 2>/dev/null | grep -A 3 "^metrics:" | grep "enableClusterQueueResources:" | awk '{print $2}')
+    set wait_for_pods_ready (kubectl get configmap kueue-manager-config -n $KUEUE_NAMESPACE -o jsonpath='{.data.controller_manager_config\.yaml}' 2>/dev/null | grep -A 3 "^waitForPodsReady:" | grep "enable:" | awk '{print $2}')
+
+    # LocalQueueMetrics is set via deployment command flags, not ConfigMap
+    set local_queue_check (kubectl get deployment kueue-controller-manager -n $KUEUE_NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null | grep -o "LocalQueueMetrics=true" | wc -l | tr -d ' ')
+    if test "$local_queue_check" -gt 0
+        set local_queue_metrics_enabled "true"
+    else
+        set local_queue_metrics_enabled "false"
+    end
+
+    set all_enabled true
+    echo ""
+
+    if test "$fair_sharing_enabled" = "true"
+        print_success "fairSharing.enable: true"
+    else
+        print_error "fairSharing.enable: false (REQUIRED)"
+        set all_enabled false
+    end
+
+    if test "$cq_resources_enabled" = "true"
+        print_success "metrics.enableClusterQueueResources: true"
+    else
+        print_error "metrics.enableClusterQueueResources: false (REQUIRED)"
+        set all_enabled false
+    end
+
+    if test "$local_queue_metrics_enabled" = "true"
+        print_success "featureGates.LocalQueueMetrics: true"
+    else
+        print_error "featureGates.LocalQueueMetrics: false (REQUIRED)"
+        set all_enabled false
+    end
+
+    if test "$wait_for_pods_ready" = "true"
+        print_success "waitForPodsReady.enable: true"
+    else
+        print_error "waitForPodsReady.enable: false (REQUIRED)"
+        set all_enabled false
+    end
+
+    echo ""
+    if test "$all_enabled" = "false"
+        print_error "Configuration prerequisites not met. Cannot run tests."
+        echo ""
+        print_info "Please update kueue-manager-config ConfigMap with required settings."
+        exit 1
+    end
+
+    print_success "All configuration prerequisites met!"
+    echo ""
+end
+
+
+function print_summary
+    print_header "Test Summary"
+
+    print_info "All test resources preserved in separate namespaces:"
+    echo "  - Preemption: $NS_PREEMPTION"
+    echo "  - Eviction (Deactivation): $NS_EVICTION_DEACT"
+    echo "  - Eviction (CQ Stop): $NS_EVICTION_CQ_STOP"
+    echo "  - Admission Checks: $NS_ADMISSION_CHECKS"
+    echo "  - Preemption Skips: $NS_PREEMPTION_SKIP"
+    echo ""
+
+    print_info "Expected metrics should now be available:"
+    echo "  1. kueue_preempted_workloads_total"
+    echo "  2. kueue_admission_cycle_preemption_skips (✅ Deterministic with blocker pattern)"
+    echo "  3. kueue_evicted_workloads_total"
+    echo "  4. kueue_local_queue_evicted_workloads_total"
+    echo "  5. kueue_admission_checks_wait_time_seconds"
+    echo "  6. kueue_local_queue_admission_checks_wait_time_seconds"
+    echo ""
+    print_info "Note: kueue_admission_cycle_preemption_skips metric:"
+    echo "  - Labeled by cluster_queue=cq-attacker-1 or cq-attacker-2 (whichever got skipped)"
+    echo "  - NOT labeled by the victim CQ (cq-victim)"
+    echo "  - Uses blocker pattern to guarantee both attackers in same admission cycle"
+    echo "  - Pattern: victim + blocker admitted → attackers queued → deactivate blocker → both process together"
+    echo ""
+
+    print_info "To verify and compare metrics, run:"
+    echo "  # Port forward to metrics endpoint"
+    echo "  oc port-forward -n $KUEUE_NAMESPACE deployment/kueue-controller-manager 8443:8443"
+    echo ""
+    echo "  # In another terminal, create token and fetch metrics"
+    echo "  set TOKEN (kubectl create token kueue-controller-manager-metrics-reader -n $KUEUE_NAMESPACE --duration=10m)"
+    echo "  curl -sk https://localhost:8443/metrics -H \"Authorization: Bearer \$TOKEN\" | rg \"TYPE kueue\" > actual-received-metrics.txt"
+    echo ""
+    echo "  # Convert to CSV format"
+    echo "  cat actual-received-metrics.txt | grep \"^# TYPE\" | awk '{print \$3 \",\" \$4}' | sort > actual-received-metrics.csv && echo \"Metric Name,Type\" | cat - actual-received-metrics.csv > temp && mv temp actual-received-metrics.csv && wc -l actual-received-metrics.csv"
+    echo ""
+    echo "  # Compare with upstream metrics"
+    echo "  compare_metrics.fish actual-received-metrics.csv actual-upstream-metrics.csv"
+    echo ""
+end
+
+# Main execution
+function main
+    print_header "Kueue Metrics Test Suite (No Cleanup)"
+    echo "Running tests in separate namespaces to preserve metrics"
+    echo ""
+
+    check_prerequisites
+    test_prerequisites_config
+    test_preemption_metrics
+    test_eviction_deactivation
+    test_eviction_cq_stopped
+    test_admission_checks
+    test_preemption_skips
+    print_summary
+
+    print_success "All tests completed! Resources preserved for metrics collection."
+end
+
+# Run main function
+main

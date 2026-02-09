@@ -1,0 +1,105 @@
+# Preemption Skip Test Setup (E2E Test Pattern)
+# This creates a scenario where multiple ClusterQueues in a Cohort compete
+# for the same preemption target, causing skips
+#
+# Metric Description: "The number of Workloads in the ClusterQueue that got
+# preemption candidates but had to be skipped because other ClusterQueues
+# needed the same resources in the same cycle"
+#
+# Scenario (matching E2E test exactly):
+# 1. Cohort with 2 ClusterQueues:
+#    - cq-1: 2 CPU quota (holds victim jobs)
+#    - cq-2: 3 CPU quota (holds blocker job)
+# 2. Two lower-priority victim jobs in cq-1 (1 CPU each, priority 0)
+# 3. One blocker job in cq-2 (3 CPU, high priority 100) - fills up cq-2
+# 4. Two high-priority attacker jobs (4 CPU each, priority 100):
+#    - higherJob1 → cq-1 (SAME CQ as victims - within-CQ preemption)
+#    - higherJob2 → cq-2 (DIFFERENT CQ from victims - cross-CQ preemption)
+# 5. Deactivate blocker → both attackers process in same cycle
+# 6. Both identify the same victims for preemption → overlap detected
+# 7. First attacker claims victims, second is skipped → metric increments
+#
+# Metric tested: kueue_admission_cycle_preemption_skips{cluster_queue="cq-X"}
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 100
+globalDefault: false
+description: "High priority class for preemption test jobs"
+---
+apiVersion: kueue.x-k8s.io/v1alpha1
+kind: Cohort
+metadata:
+  name: skip-cohort
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: "skip-test-flavor"
+---
+# ClusterQueue 1: Holds victim jobs, attacker-1 will preempt within this CQ
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: "cq-1"
+spec:
+  cohort: "skip-cohort"
+  namespaceSelector: {}
+  preemption:
+    reclaimWithinCohort: LowerPriority
+    borrowWithinCohort:
+      policy: LowerPriority
+    withinClusterQueue: LowerPriority
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: "skip-test-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 2
+      - name: "memory"
+        nominalQuota: 2Gi
+---
+# ClusterQueue 2: Holds blocker, attacker-2 will preempt cross-CQ
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: "cq-2"
+spec:
+  cohort: "skip-cohort"
+  namespaceSelector: {}
+  preemption:
+    reclaimWithinCohort: LowerPriority
+    borrowWithinCohort:
+      policy: LowerPriority
+    withinClusterQueue: LowerPriority
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: "skip-test-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 3
+      - name: "memory"
+        nominalQuota: 3Gi
+---
+# LocalQueue for cq-1
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: kueue-test-preemption-skip
+  name: lq-1
+spec:
+  clusterQueue: cq-1
+---
+# LocalQueue for cq-2
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: kueue-test-preemption-skip
+  name: lq-2
+spec:
+  clusterQueue: cq-2

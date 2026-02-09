@@ -1,0 +1,29 @@
+# Eviction Test Setup
+# This manifest creates ONLY cluster-scoped resources for testing eviction metrics
+# Metrics tested: kueue_evicted_workloads_total, kueue_local_queue_evicted_workloads_total
+#
+# LocalQueues and Jobs are created dynamically by the test script in the correct namespaces
+# using separate manifest files (see run-metrics-tests-no-cleanup.fish functions)
+
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: "eviction-flavor"
+---
+# ClusterQueue for eviction testing
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: "cq-eviction-test"
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: "eviction-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 5
+      - name: "memory"
+        nominalQuota: 10Gi

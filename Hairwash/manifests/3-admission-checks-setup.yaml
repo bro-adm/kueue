@@ -1,0 +1,58 @@
+# Admission Checks Test Setup
+# This manifest creates cluster-scoped resources for testing admission checks metrics
+# Metrics tested: kueue_admission_checks_wait_time_seconds, kueue_local_queue_admission_checks_wait_time_seconds
+# Note: LocalQueues are created dynamically by the test script in the correct namespaces
+
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: "admission-check-flavor"
+---
+# ClusterQueue with admission checks configured
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: "cq-admission-check-test"
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: "admission-check-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 10
+      - name: "memory"
+        nominalQuota: 20Gi
+  admissionChecksStrategy:
+    admissionChecks:
+      - name: "sample-admission-check"
+        onFlavors: [admission-check-flavor]
+---
+# AdmissionCheck resource
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: AdmissionCheck
+metadata:
+  name: sample-admission-check
+spec:
+  controllerName: kueue.x-k8s.io/provisioning-request
+  parameters:
+    apiGroup: kueue.x-k8s.io
+    kind: ProvisioningRequestConfig
+    name: admission-check-config
+---
+# ProvisioningRequestConfig for the admission check
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ProvisioningRequestConfig
+metadata:
+  name: admission-check-config
+spec:
+  provisioningClassName: check-capacity.autoscaling.x-k8s.io
+  managedResources:
+  - cpu
+  - memory
+  retryStrategy:
+    backoffLimitCount: 2
+    backoffBaseSeconds: 0
+    backoffMaxSeconds: 1800

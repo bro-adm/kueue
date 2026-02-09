@@ -1,0 +1,32 @@
+# Admission Checks Test Job
+# This job triggers the admission checks workflow
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: admission-check-test-job
+  namespace: kueue-test
+  labels:
+    kueue.x-k8s.io/queue-name: lq-admission-check-test
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-admission-check-test
+    spec:
+      containers:
+      - name: test-job
+        image: quay.io/stagex/core-busybox
+        command: ["sleep", "300"]
+        resources:
+          requests:
+            cpu: "1"
+            memory: "1Gi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+      restartPolicy: Never

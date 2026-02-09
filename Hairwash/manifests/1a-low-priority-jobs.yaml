@@ -1,0 +1,66 @@
+# Preemption Test Jobs
+# These jobs are used to trigger preemption scenarios
+
+---
+# Low priority job 1 - will be preempted
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: low-priority-job-1
+  namespace: kueue-test
+  labels:
+    kueue.x-k8s.io/queue-name: lq-preempt-1
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-preempt-1
+    spec:
+      priorityClassName: low-priority
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: ["sleep", "300"]
+        resources:
+          requests:
+            cpu: "1"
+            memory: "1Gi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+      restartPolicy: Never
+---
+# Low priority job 2 - will be preempted
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: low-priority-job-2
+  namespace: kueue-test
+  labels:
+    kueue.x-k8s.io/queue-name: lq-preempt-1
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: lq-preempt-1
+    spec:
+      priorityClassName: low-priority
+      containers:
+      - name: sleep
+        image: quay.io/stagex/core-busybox
+        command: ["sleep", "300"]
+        resources:
+          requests:
+            cpu: "1"
+            memory: "1Gi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+      restartPolicy: Never
+---
